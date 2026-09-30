@@ -1,0 +1,44 @@
+name: Update hush
+
+# Takes Formula/hush.rb from the latest omarei-omoto/hush release, after
+# checking every sha256 in it against that release's SHA256SUMS, and commits it
+# if it changed. Runs every six hours and on demand; it needs only this
+# repository's own token, so hush's release needs no secret to update the tap.
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: fetch the latest release's formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh release view --repo omarei-omoto/hush --json tagName -q .tagName)"
+          gh release download "$tag" --repo omarei-omoto/hush --pattern hush.rb --pattern SHA256SUMS --dir /tmp/rel
+          # Every hash the formula names must be the release's own hash for that file.
+          grep -oE 'download/v[^/]+/hush-[a-z0-9-]+"' /tmp/rel/hush.rb | sed -E 's#.*/(hush-[a-z0-9-]+)"#\1#' | while read -r file; do
+            want="$(awk -v f="$file" '$2 == f { print $1 }' /tmp/rel/SHA256SUMS)"
+            test -n "$want" || { echo "SHA256SUMS does not list $file"; exit 1; }
+            grep -q "sha256 \"$want\"" /tmp/rel/hush.rb || { echo "hush.rb's hash for $file is not the release's"; exit 1; }
+          done
+          mkdir -p Formula
+          cp /tmp/rel/hush.rb Formula/hush.rb
+          echo "tag=$tag" >> "$GITHUB_ENV"
+      - name: commit if it changed
+        run: |
+          set -euo pipefail
+          git config user.name "hush tap"
+          git config user.email "hush-tap@users.noreply.github.com"
+          git add Formula/hush.rb
+          git diff --cached --quiet && { echo "already at $tag"; exit 0; }
+          git commit -m "hush ${tag#v}"
+          git push
